@@ -1,11 +1,11 @@
-model "A model of a car battery in DA energy"
+model "Model of an Aggregator's EV fleet"
     uses "mmxprs"
     uses "mmsheet"
 
 parameters
-    inputfile    = "Demand.xlsx"
-    char_eff = 0.9      ! charging char_efficiency
-    dischar_eff = 0.9   ! discharging char_efficiency
+    inputfile    = "Demand_Project.xlsx"
+    char_eff = 0.9      ! charging efficiency
+    dischar_eff = 0.9   ! discharging efficiency
     NPer  = 24          ! number of 1-hour periods
     Stor_Cap = 40       ! kWh average battery capacity of an EV based on literature
     B_init = 0.5        ! charge battery profile when car arrives to be plugged in
@@ -18,12 +18,12 @@ parameters
     N_total = 800       ! number of client vehicles
     DA_p = 0.125        ! DA energy price per kWh
     reg_p = 0.018       ! regulation market price (up-BS or down-BS)
-    RT_p = 0.125
+    RT_p = 0.125        ! RT balancing price
     duration = 1        ! maximum time services can be used
-    prob_down_accept = 0.9
-    prob_down_deploy = 0.6
-    prob_up_accept = 0.9
-    prob_up_deploy = 0.6
+    prob_down_accept = 0.9  !probability of acceptance of down-BS bid
+    prob_down_deploy = 0.6  !probability of deployment of down-BS bid
+    prob_up_accept = 0.9    !probability of acceptance of up-BS bid
+    prob_up_deploy = 0.6    !probability of deployment of up-BS bid
 end-parameters
 
 setparam("XPRS_VERBOSE",true)
@@ -59,9 +59,9 @@ end-declarations
 !!!============Initializations========================
         !from excel:
     initialisations from "mmsheet.xlsx:"+inputfile
-        loadfactor as "skiph;noindex;[d1:d25]"
-        connecting as "skiph;noindex;[e1:e25]"
-        disconnecting as "skiph;noindex;[f1:f25]"
+        loadfactor as "skiph;noindex;[b1:b25]"
+        connecting as "skiph;noindex;[c1:c25]"
+        disconnecting as "skiph;noindex;[d1:d25]"
     end-initializations
 
         !from other parameters:
@@ -91,12 +91,12 @@ end-declarations
 writeln("----Optimization model begins------")
 !!!!!!==================Optimization model begins================================
                                                     !Revenues and Costs!
-Revenue_DA := sum(t in periods) DA_p*(F_storage_power_out(t) - F_storage_power_in(t))                                                         !DA price multiplied by the power difference
-Revenue_BS := sum(t in periods) reg_p*(prob_down_accept*F_BS_Down(t) + prob_up_accept*F_BS_Up(t))                                             !revenue from balancing services
-Revenue_BS_Depl := sum(t in periods) RT_p*dischar_eff*(prob_up_accept*prob_up_deploy*F_BS_Up(t))*duration/3
+Revenue_DA := sum(t in periods) DA_p*(F_storage_power_out(t) - F_storage_power_in(t))                                       !DA price multiplied by the power difference
+Revenue_BS := sum(t in periods) reg_p*(prob_down_accept*F_BS_Down(t) + prob_up_accept*F_BS_Up(t))                           !revenue from balancing services bidding
+Revenue_BS_Depl := sum(t in periods) RT_p*dischar_eff*(prob_up_accept*prob_up_deploy*F_BS_Up(t))*duration/3                 !revenue from deploying balancing services
 
-Cost_BS := sum(t in periods) plugged(t)*B_cost*B_m/100*((prob_down_accept*prob_down_deploy*F_BS_Down(t) + prob_up_accept*prob_up_deploy*F_BS_Up(t))/(Stor_Cap*plugged(t)))                           !costs of battery degradation
-Cost_DA := sum(t in periods) plugged(t)*B_cost*B_m/100*((F_storage_power_in(t) + F_storage_power_out(t))/(Stor_Cap*plugged(t)))                                      !costs of battery degradation assoiciated with charging/discharging
+Cost_BS := sum(t in periods) plugged(t)*B_cost*B_m/100*((prob_down_accept*prob_down_deploy*F_BS_Down(t) + prob_up_accept*prob_up_deploy*F_BS_Up(t))/(Stor_Cap*plugged(t)))          !costs of battery degradation
+Cost_DA := sum(t in periods) plugged(t)*B_cost*B_m/100*((F_storage_power_in(t) + F_storage_power_out(t))/(Stor_Cap*plugged(t)))                                                     !costs of battery degradation assoiciated with charging/discharging
 Cost_BS_Down_Prob := sum(t in periods) RT_p*prob_down_accept*prob_down_deploy*(1-prob_down_deploy)*(F_BS_Down(t) - prob_down_accept*prob_down_deploy*F_BS_Down(t))
 Cost_BS_Up_Prob := sum(t in periods) RT_p*prob_up_accept*prob_up_deploy*(1-prob_up_deploy)*(F_BS_Up(t) - prob_up_accept*prob_up_deploy*F_BS_Up(t))
 Cost_DEG := Cost_BS+Cost_DA
@@ -121,7 +121,7 @@ F_SoC(1) = F_SoC(NPer)      !continuity
 !making sure that power flow into/out of the fleet does not exceed max power rating
 forall(t in periods) do
    b2(t) := F_storage_power_in(t) - F_storage_power_out(t) + F_BS_Down(t) <= F_P_max(t)             !constraint that ensures power flow in does not exceed max power
-   b3(t) := F_storage_power_out(t) - F_storage_power_in(t) +  F_BS_Up(t) <= F_P_max(t)            !constraint that ensures power flow out does not exceed max power
+   b3(t) := F_storage_power_out(t) - F_storage_power_in(t) +  F_BS_Up(t) <= F_P_max(t)              !constraint that ensures power flow out does not exceed max power
 end-do
 
 !Down-BS regulation constraints
@@ -132,23 +132,15 @@ forall(t in 2..NPer) b4(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_po
 forall(t in 2..NPer) b5(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration <= Max_Req_F_SoC*F_Stor_Cap(t)
 forall(t in 2..NPer) b6(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration >= Min_Req_F_SoC*Stor_Cap*disconnecting(t)
 
-!forall (t in periods) F_storage_power_out(t) = 0                               ! condition that there is no V2G service
-
-
 maximise(Profit)
 
 !!!!!!!!!!!!!!!!!!==== output================!!!!!
 
- forall(t in periods) do
-  !writeln("\n F_storage_power_in(", t, ")=", getsol(F_storage_power_in(t)))
-  !writeln("\n F_storage_power_out(",t,")=",getsol(F_storage_power_out(t)))
-  !writeln("\n plugged(",t,")=",getsol(plugged(t)))
-  !writeln("\n connecting(",t,")=",getsol(connecting(t)))
-  !writeln("\n disconnecting(",t,")=",getsol(disconnecting(t)))
-  !writeln("\n F_SoC(",t,")=",getsol(F_SoC(t)))
-  writeln(F_P_max(t))
-  !writeln("\n BS_up(",t,")=",getsol(F_BS_Up(t)))
-  !writeln("\n BS_down(",t,")=",getsol(F_BS_Down(t)))
+ forall(t in periods) do                                                            !seeing the hour-by-hour breakdown of the power within the fleet
+  writeln("\n F_storage_power_in(", t, ")=", getsol(F_storage_power_in(t)))
+  writeln("\n F_storage_power_out(",t,")=",getsol(F_storage_power_out(t)))
+  writeln("\n BS_up(",t,")=",getsol(F_BS_Up(t)))
+  writeln("\n BS_down(",t,")=",getsol(F_BS_Down(t)))
  end-do
 
 writeln("\n")
