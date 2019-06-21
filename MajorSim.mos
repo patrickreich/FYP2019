@@ -2,6 +2,10 @@ model "Model of an Aggregator's EV fleet"
     uses "mmxprs"
     uses "mmsheet"
 
+! a single EV cant operate in the energy market by itself due to its low capacity . The aggregator allows for a coordinated fleet of EVs to participate in the markets
+! offering bids to the SO and DNO. This model maximizes the profit of the aggregator.
+
+
 parameters
     inputfile    = "Demand_Project.xlsx"
     char_eff = 0.9      ! charging efficiency
@@ -15,7 +19,7 @@ parameters
     Max_Req_F_SoC = 1   ! desired maximum battery profile when car would like to leave
     P_rat = 7           ! kW power rating of EV
     DoD = 0.8           ! max depth of discharge (roughly 0.8 for lithium ion)
-    N_total = 800       ! number of client vehicles
+    N_total = 3000       ! number of client vehicles
     DA_p = 0.125        ! DA energy price per kWh
     reg_p = 0.018       ! regulation market price (up-BS or down-BS)
     RT_p = 0.125        ! RT balancing price
@@ -48,12 +52,23 @@ declarations
     net_con : array(periods) of real                  ! difference in connecting vehicles between time periods
     F_BS_Down : array(periods) of mpvar               ! balancing services down porvided by fleet
     F_BS_Up : array(periods) of mpvar                 ! balancing services up porvided by fleet
+    Revenue_DA : mpvar
+    Revenue_BS : mpvar
+    Revenue_BS_Depl : mpvar
+    Cost_BS : mpvar
+    Cost_DA : mpvar
+    Cost_BS_Down_Prob : mpvar
+    Cost_BS_Up_Prob : mpvar
+    Cost_DEG : mpvar
+    Cost_PEN : mpvar
     b1 : array(periods) of linctr
     b2 : array(periods) of linctr
     b3 : array(periods) of linctr
     b4 : array(periods) of linctr
     b5 : array(periods) of linctr
     b6 : array(periods) of linctr
+    b7 : array(periods) of linctr
+    b8 : array(periods) of linctr
 end-declarations
 
 !!!============Initializations========================
@@ -91,21 +106,21 @@ end-declarations
 writeln("----Optimization model begins------")
 !!!!!!==================Optimization model begins================================
                                                     !Revenues and Costs!
-Revenue_DA := sum(t in periods) DA_p*(F_storage_power_out(t) - F_storage_power_in(t))                                       !DA price multiplied by the power difference
-Revenue_BS := sum(t in periods) reg_p*(prob_down_accept*F_BS_Down(t) + prob_up_accept*F_BS_Up(t))                           !revenue from balancing services bidding
-Revenue_BS_Depl := sum(t in periods) RT_p*dischar_eff*(prob_up_accept*prob_up_deploy*F_BS_Up(t))*duration/3                 !revenue from deploying balancing services
+Revenue_DA = sum(t in periods) DA_p*(F_storage_power_out(t) - F_storage_power_in(t))                                       !DA price multiplied by the power difference
+Revenue_BS = sum(t in periods) reg_p*(prob_down_accept*F_BS_Down(t) + prob_up_accept*F_BS_Up(t))                           !revenue from balancing services bidding
+Revenue_BS_Depl = sum(t in periods) RT_p*dischar_eff*(prob_up_accept*prob_up_deploy*F_BS_Up(t))*duration/3                 !revenue from deploying balancing services
 
-Cost_BS := sum(t in periods) plugged(t)*B_cost*B_m/100*((prob_down_accept*prob_down_deploy*F_BS_Down(t) + prob_up_accept*prob_up_deploy*F_BS_Up(t))/(Stor_Cap*plugged(t)))          !costs of battery degradation
-Cost_DA := sum(t in periods) plugged(t)*B_cost*B_m/100*((F_storage_power_in(t) + F_storage_power_out(t))/(Stor_Cap*plugged(t)))                                                     !costs of battery degradation assoiciated with charging/discharging
-Cost_BS_Down_Prob := sum(t in periods) RT_p*prob_down_accept*prob_down_deploy*(1-prob_down_deploy)*(F_BS_Down(t) - prob_down_accept*prob_down_deploy*F_BS_Down(t))
-Cost_BS_Up_Prob := sum(t in periods) RT_p*prob_up_accept*prob_up_deploy*(1-prob_up_deploy)*(F_BS_Up(t) - prob_up_accept*prob_up_deploy*F_BS_Up(t))
-Cost_DEG := Cost_BS+Cost_DA
-Cost_PEN := Cost_BS_Down_Prob+Cost_BS_Up_Prob
+Cost_BS = sum(t in periods) plugged(t)*B_cost*B_m/100*((prob_down_accept*prob_down_deploy*F_BS_Down(t) + prob_up_accept*prob_up_deploy*F_BS_Up(t))/(Stor_Cap*plugged(t)))          !costs of battery degradation from balancing
+Cost_DA = sum(t in periods) plugged(t)*B_cost*B_m/100*((F_storage_power_in(t) + F_storage_power_out(t))/(Stor_Cap*plugged(t)))                                                     !costs of battery degradation associated with charging/discharging
+Cost_BS_Down_Prob = sum(t in periods) RT_p*prob_down_accept*prob_down_deploy*(1-prob_down_deploy)*(F_BS_Down(t) - prob_down_accept*prob_down_deploy*F_BS_Down(t))                  !costs of buying shortage (down-BS)
+Cost_BS_Up_Prob = sum(t in periods) RT_p*prob_up_accept*prob_up_deploy*(1-prob_up_deploy)*(F_BS_Up(t) - prob_up_accept*prob_up_deploy*F_BS_Up(t))                                  !costs of buying shortage (up-BS)
+Cost_DEG = Cost_BS+Cost_DA                                                                                                                                                         !sum of degradation costs
+Cost_PEN = Cost_BS_Down_Prob+Cost_BS_Up_Prob                                                                                                                                       !sum of shortage costs
                                                     !!!Objective function!!!
 Profit := (Revenue_DA + Revenue_BS + Revenue_BS_Depl - Cost_DEG - Cost_PEN)
 
-!energy balancing equation (DA market)
-b1(1) := F_SoC(1) = F_Stor_Cap(1) + F_storage_power_in(1)*char_eff - F_storage_power_out(1)/dischar_eff + B_init*Stor_Cap*connecting(1) - ((Min_Req_F_SoC + Max_Req_F_SoC)/2)*Stor_Cap*disconnecting(1)
+!energy balancing equation
+!b1(1) := F_SoC(1) = F_Stor_Cap(1) + F_storage_power_in(1)*char_eff - F_storage_power_out(1)/dischar_eff + B_init*Stor_Cap*connecting(1) - ((Min_Req_F_SoC + Max_Req_F_SoC)/2)*Stor_Cap*disconnecting(1)
 forall (t in 2..NPer) b1(t) := F_SoC(t) = F_SoC(t-1) + F_storage_power_in(t)*char_eff - F_storage_power_out(t)/dischar_eff + B_init*Stor_Cap*connecting(t) - ((Min_Req_F_SoC + Max_Req_F_SoC)/2)*Stor_Cap*disconnecting(t)
 
 forall(t in periods) F_SoC(t) >= Min_Req_F_SoC*Stor_Cap*disconnecting(t)     !Enough charge for drivers that are leaving
@@ -128,9 +143,9 @@ end-do
 forall(t in 2..NPer) b4(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) + F_BS_Down(t))*duration >= (1-DoD)*F_Stor_Cap(t)
 forall(t in 2..NPer) b5(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) + F_BS_Down(t))*duration <= Max_Req_F_SoC*F_Stor_Cap(t)
 !Up-BS regulation constraints
-forall(t in 2..NPer) b4(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration >= (1-DoD)*F_Stor_Cap(t)
-forall(t in 2..NPer) b5(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration <= Max_Req_F_SoC*F_Stor_Cap(t)
-forall(t in 2..NPer) b6(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration >= Min_Req_F_SoC*Stor_Cap*disconnecting(t)
+forall(t in 2..NPer) b6(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration >= (1-DoD)*F_Stor_Cap(t)
+forall(t in 2..NPer) b7(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration <= Max_Req_F_SoC*F_Stor_Cap(t)
+forall(t in 2..NPer) b7(t) := F_SoC(t-1) + (F_storage_power_in(t) - F_storage_power_out(t) - F_BS_Up(t))*duration >= Min_Req_F_SoC*Stor_Cap*disconnecting(t)
 
 maximise(Profit)
 
